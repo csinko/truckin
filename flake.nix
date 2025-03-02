@@ -36,6 +36,7 @@
         '';
       in {
         packages.truckin = truckin;
+        packages.default = truckin;
 
         apps.tests = {
           type = "app";
