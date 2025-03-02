@@ -135,7 +135,7 @@ def test_output_file_summary(tmp_path: Path, tkn_executable: Path) -> None:
     for fname, content in files.items():
         file_path = tmp_path / fname
         file_path.write_text(content)
-        expected_tokens[fname] = len(content.split())
+        expected_tokens[fname] = len(content) // 4
 
     # Run tkn in JSON mode.
     args = ["-j"] + list(files.keys())
@@ -190,6 +190,6 @@ def test_large_number_of_files(tmp_path: Path, tkn_executable: Path) -> None:
     for entry in summary.files:
         fname = entry.name
         tokens = entry.tokens
-        expected = len(file_contents.get(fname, "").split())
+        expected = len(file_contents.get(fname, "")) // 4
         assert tokens == expected, f"Token count mismatch for {fname}: expected {expected}, got {tokens}"
 
