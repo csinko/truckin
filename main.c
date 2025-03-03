@@ -359,60 +359,92 @@ static char **parseGitignore( const char *const pszPath, int *const piCount )
         }
         fclose( pFile );
         *piCount = iCount;
+        
+        // Verbose logging for parsed .gitignore patterns
+        if (iVerbose) {
+            printf("Parsed %d patterns from %s:\n", iCount, pszPath);
+            for (int i = 0; i < iCount; i++) {
+                printf("  %s\n", ppPatterns[i]);
+            }
+        }
     }
     return ppPatterns;
 }
 
-static bool isExcluded( const char *const pszFilePath, const IgnorePatterns_t *const pPatterns )
+static bool isExcluded(const char *const pszFilePath, const IgnorePatterns_t *const pPatterns)
 {
     bool bExcluded = false;
-    for ( const IgnorePatterns_t *pCurr = pPatterns;
-          ( pCurr != NULL ) && ( bExcluded == false );
-          pCurr = pCurr->pParent )
+    for (const IgnorePatterns_t *pCurr = pPatterns;
+         (pCurr != NULL) && (bExcluded == false);
+         pCurr = pCurr->pParent)
     {
-        char *pszRelPath = getRelPath( pszFilePath, pCurr->pszDir );
-        if ( pszRelPath != NULL )
+        char *pszRelPath = getRelPath(pszFilePath, pCurr->pszDir);
+        if (pszRelPath != NULL)
         {
-            for ( int iIdx = 0; ( iIdx < pCurr->iPatternCount ) && ( bExcluded == false );
-                  iIdx++ )
+            for (int iIdx = 0; (iIdx < pCurr->iPatternCount) && (bExcluded == false);
+                 iIdx++)
             {
-                const char *pszPattern = pCurr->ppSzPatterns[ iIdx ];
-                size_t uLen = strlen( pszPattern );
-                if ( pszPattern[ uLen - 1 ] == '/' )
+                const char *pszPattern = pCurr->ppSzPatterns[iIdx];
+                // Strip leading '/' if present to match relative paths correctly
+                const char *matchPattern = (pszPattern[0] == '/') ? pszPattern + 1 : pszPattern;
+                size_t uLen = strlen(matchPattern);
+                
+                // Handle directory patterns (ending with '/')
+                if (matchPattern[uLen - 1] == '/')
                 {
-                    char pModified[ PATH_MAX ];
-                    snprintf( pModified, PATH_MAX, "%s*", pszPattern );
-                    if ( fnmatch( pModified, pszRelPath, FNM_PATHNAME ) == 0 )
+                    char pModified[PATH_MAX];
+                    snprintf(pModified, PATH_MAX, "%s*", matchPattern);
+                    if (fnmatch(pModified, pszRelPath, FNM_PATHNAME) == 0)
                     {
+                        if (iVerbose) {
+                            printf("Excluded %s due to pattern %s in %s\n", 
+                                   pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir);
+                        }
                         bExcluded = true;
                     }
                 }
-                else if ( strchr( pszPattern, '/' ) != NULL )
+                // Handle path patterns (containing '/' but not ending with '/')
+                else if (strchr(matchPattern, '/') != NULL)
                 {
-                    if ( fnmatch( pszPattern, pszRelPath, FNM_PATHNAME ) == 0 )
+                    if (fnmatch(matchPattern, pszRelPath, FNM_PATHNAME) == 0)
                     {
+                        if (iVerbose) {
+                            printf("Excluded %s due to pattern %s in %s\n", 
+                                   pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir);
+                        }
                         bExcluded = true;
                     }
                 }
+                // Handle basename patterns (no '/')
                 else
                 {
-                    char *pszBase = strrchr( pszRelPath, '/' );
-                    pszBase = ( pszBase != NULL ) ? pszBase + 1 : pszRelPath;
-                    if ( fnmatch( pszPattern, pszBase, 0 ) == 0 )
+                    char *pszBase = strrchr(pszRelPath, '/');
+                    pszBase = (pszBase != NULL) ? pszBase + 1 : pszRelPath;
+                    if (fnmatch(matchPattern, pszBase, 0) == 0)
                     {
+                        if (iVerbose) {
+                            printf("Excluded %s due to pattern %s in %s\n", 
+                                   pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir);
+                        }
                         bExcluded = true;
                     }
                 }
             }
-            free( pszRelPath );
+            free(pszRelPath);
         }
     }
-    if ( bExcluded == false )
+    
+    // Check global exclude patterns if not already excluded
+    if (bExcluded == false)
     {
-        for ( int iIdx = 0; ( iIdx < iExcludeCount ) && ( bExcluded == false ); iIdx++ )
+        for (int iIdx = 0; (iIdx < iExcludeCount) && (bExcluded == false); iIdx++)
         {
-            if ( fnmatch( ppSzExcludes[ iIdx ], pszFilePath, 0 ) == 0 )
+            if (fnmatch(ppSzExcludes[iIdx], pszFilePath, 0) == 0)
             {
+                if (iVerbose) {
+                    printf("Excluded %s due to global exclude pattern %s\n", 
+                           pszFilePath, ppSzExcludes[iIdx]);
+                }
                 bExcluded = true;
             }
         }
@@ -420,165 +452,131 @@ static bool isExcluded( const char *const pszFilePath, const IgnorePatterns_t *c
     return bExcluded;
 }
 
-static void expandPattern( const char *const pszPattern, IgnorePatterns_t *pPatterns )
+static void expandPattern(const char *const pszPattern, IgnorePatterns_t *pPatterns)
 {
     struct stat stStat;
-    if ( stat( pszPattern, &stStat ) == 0 )
+    if (stat(pszPattern, &stStat) != 0)
     {
-        if ( S_ISREG( stStat.st_mode ) == true )
-        {
-            if ( isExcluded( pszPattern, pPatterns ) == false )
-            {
-                addFileToList( pszPattern );
-            }
-        }
-        else if ( S_ISDIR( stStat.st_mode ) == true )
-        {
-            IgnorePatterns_t *pCurrPatterns = pPatterns;
-            char pGitPath[ PATH_MAX ];
-            snprintf( pGitPath, PATH_MAX, "%s/.gitignore", pszPattern );
-            if ( access( pGitPath, F_OK ) == 0 )
-            {
-                int iNewCount = 0;
-                char **ppSzNew = parseGitignore( pGitPath, &iNewCount );
-                if ( iNewCount > 0 )
-                {
-                    IgnorePatterns_t *pNew = malloc( sizeof( IgnorePatterns_t ) );
-                    if ( pNew == NULL )
-                    {
-                        perror( "malloc" );
-                        exit( EXIT_FAILURE );
-                    }
-                    pNew->pszDir = strdup( pszPattern );
-                    pNew->ppSzPatterns = ppSzNew;
-                    pNew->iPatternCount = iNewCount;
-                    pNew->pParent = pPatterns;
-                    pCurrPatterns = pNew;
-                }
-            }
-            DIR *pDir = opendir( pszPattern );
-            if ( pDir != NULL )
-            {
-                struct dirent *pEntry;
-                while ( ( pEntry = readdir( pDir ) ) != NULL )
-                {
-                    if ( ( strcmp( pEntry->d_name, "." ) == 0 ) ||
-                         ( strcmp( pEntry->d_name, ".." ) == 0 ) )
-                    {
-                        continue;
-                    }
-                    if ( strcmp( pEntry->d_name, ".git" ) == 0 )
-                    {
-                        continue;
-                    }
-                    char pFullPath[ PATH_MAX ];
-                    snprintf( pFullPath, PATH_MAX, "%s/%s", pszPattern, pEntry->d_name );
-                    struct stat stChild;
-                    if ( stat( pFullPath, &stChild ) == 0 )
-                    {
-                        if ( ( S_ISREG( stChild.st_mode ) == true ) &&
-                             ( isExcluded( pFullPath, pCurrPatterns ) == false ) )
-                        {
-                            addFileToList( pFullPath );
-                        }
-                        else if ( S_ISDIR( stChild.st_mode ) == true )
-                        {
-                            expandPattern( pFullPath, pCurrPatterns );
-                        }
-                    }
-                }
-                closedir( pDir );
-            }
-            if ( pCurrPatterns != pPatterns )
-            {
-                free( pCurrPatterns->pszDir );
-                for ( int iIdx = 0; iIdx < pCurrPatterns->iPatternCount; iIdx++ )
-                {
-                    free( pCurrPatterns->ppSzPatterns[ iIdx ] );
-                }
-                free( pCurrPatterns->ppSzPatterns );
-                free( pCurrPatterns );
-            }
-        }
-    }
-    else
-    {
-        char pDir[ PATH_MAX ];
-        char pFilePattern[ PATH_MAX ];
-        const char *pszSlash = strrchr( pszPattern, '/' );
-        if ( pszSlash != NULL )
+        // Handle wildcard patterns (e.g., *.c) if the path doesn't exist
+        char pDir[PATH_MAX];
+        char pFilePattern[PATH_MAX];
+        const char *pszSlash = strrchr(pszPattern, '/');
+
+        if (pszSlash != NULL)
         {
             size_t uLen = pszSlash - pszPattern;
-            if ( uLen >= PATH_MAX )
-            {
-                uLen = PATH_MAX - 1;
-            }
-            strncpy( pDir, pszPattern, uLen );
-            pDir[ uLen ] = '\0';
-            snprintf( pFilePattern, PATH_MAX, "%s", pszSlash + 1 );
+            strncpy(pDir, pszPattern, uLen);
+            pDir[uLen] = '\0';
+            snprintf(pFilePattern, PATH_MAX, "%s", pszSlash + 1);
         }
         else
         {
-            strcpy( pDir, "." );
-            snprintf( pFilePattern, PATH_MAX, "%s", pszPattern );
+            strcpy(pDir, ".");
+            snprintf(pFilePattern, PATH_MAX, "%s", pszPattern);
         }
+
+        if (isExcluded(pDir, pPatterns))
+        {
+            if (iVerbose) {
+                printf("Skipping excluded directory for pattern: %s\n", pDir);
+            }
+            return; // Skip excluded directories
+        }
+
+        DIR *pDirStream = opendir(pDir);
+        if (pDirStream != NULL)
+        {
+            struct dirent *pEntry;
+            while ((pEntry = readdir(pDirStream)) != NULL)
+            {
+                if (strcmp(pEntry->d_name, ".") == 0 || strcmp(pEntry->d_name, "..") == 0)
+                    continue;
+                if (strcmp(pEntry->d_name, ".git") == 0)
+                    continue;
+
+                char pFullPath[PATH_MAX];
+                snprintf(pFullPath, PATH_MAX, "%s/%s", pDir, pEntry->d_name);
+
+                if (fnmatch(pFilePattern, pEntry->d_name, 0) == 0)
+                {
+                    struct stat stChild;
+                    if (stat(pFullPath, &stChild) == 0 && S_ISREG(stChild.st_mode) && !isExcluded(pFullPath, pPatterns))
+                    {
+                        addFileToList(pFullPath);
+                    }
+                }
+            }
+            closedir(pDirStream);
+        }
+        return;
+    }
+
+    // Path exists, check if it’s excluded
+    if (isExcluded(pszPattern, pPatterns))
+    {
+        if (iVerbose) {
+            printf("Skipping excluded path: %s\n", pszPattern);
+        }
+        return; // Skip excluded files or directories entirely
+    }
+
+    // Handle regular files
+    if (S_ISREG(stStat.st_mode))
+    {
+        addFileToList(pszPattern);
+        return;
+    }
+
+    // Handle directories
+    if (S_ISDIR(stStat.st_mode))
+    {
+        DIR *pDir = opendir(pszPattern);
+        if (pDir == NULL)
+            return;
+
+        // Load local .gitignore if present
         IgnorePatterns_t *pCurrPatterns = pPatterns;
-        char pGitPath[ PATH_MAX ];
-        snprintf( pGitPath, PATH_MAX, "%s/.gitignore", pDir );
-        if ( access( pGitPath, F_OK ) == 0 )
+        char pGitPath[PATH_MAX];
+        snprintf(pGitPath, PATH_MAX, "%s/.gitignore", pszPattern);
+        if (access(pGitPath, F_OK) == 0)
         {
             int iNewCount = 0;
-            char **ppSzNew = parseGitignore( pGitPath, &iNewCount );
-            if ( iNewCount > 0 )
+            char **ppSzNew = parseGitignore(pGitPath, &iNewCount);
+            if (iNewCount > 0)
             {
-                IgnorePatterns_t *pNew = malloc( sizeof( IgnorePatterns_t ) );
-                if ( pNew == NULL )
-                {
-                    perror( "malloc" );
-                    exit( EXIT_FAILURE );
-                }
-                pNew->pszDir = strdup( pDir );
+                IgnorePatterns_t *pNew = malloc(sizeof(IgnorePatterns_t));
+                pNew->pszDir = strdup(pszPattern);
                 pNew->ppSzPatterns = ppSzNew;
                 pNew->iPatternCount = iNewCount;
                 pNew->pParent = pPatterns;
                 pCurrPatterns = pNew;
             }
         }
-        DIR *pDirStream = opendir( pDir );
-        if ( pDirStream != NULL )
+
+        struct dirent *pEntry;
+        while ((pEntry = readdir(pDir)) != NULL)
         {
-            struct dirent *pEntry;
-            while ( ( pEntry = readdir( pDirStream ) ) != NULL )
-            {
-                if ( ( strcmp( pEntry->d_name, "." ) == 0 ) ||
-                     ( strcmp( pEntry->d_name, ".." ) == 0 ) )
-                {
-                    continue;
-                }
-                if ( fnmatch( pFilePattern, pEntry->d_name, 0 ) == 0 )
-                {
-                    char pFullPath[ PATH_MAX ];
-                    snprintf( pFullPath, PATH_MAX, "%s/%s", pDir, pEntry->d_name );
-                    struct stat stChild;
-                    if ( ( stat( pFullPath, &stChild ) == 0 ) &&
-                         ( S_ISREG( stChild.st_mode ) == true ) &&
-                         ( isExcluded( pFullPath, pCurrPatterns ) == false ) )
-                    {
-                        addFileToList( pFullPath );
-                    }
-                }
-            }
-            closedir( pDirStream );
+            if (strcmp(pEntry->d_name, ".") == 0 || strcmp(pEntry->d_name, "..") == 0)
+                continue;
+            if (strcmp(pEntry->d_name, ".git") == 0)
+                continue;
+
+            char pFullPath[PATH_MAX];
+            snprintf(pFullPath, PATH_MAX, "%s/%s", pszPattern, pEntry->d_name);
+
+            // Recursively process the full path with current patterns
+            expandPattern(pFullPath, pCurrPatterns);
         }
-        if ( pCurrPatterns != pPatterns )
+        closedir(pDir);
+
+        // Clean up local patterns if allocated
+        if (pCurrPatterns != pPatterns)
         {
-            free( pCurrPatterns->pszDir );
-            for ( int iIdx = 0; iIdx < pCurrPatterns->iPatternCount; iIdx++ )
-            {
-                free( pCurrPatterns->ppSzPatterns[ iIdx ] );
-            }
-            free( pCurrPatterns->ppSzPatterns );
-            free( pCurrPatterns );
+            free(pCurrPatterns->pszDir);
+            for (int i = 0; i < pCurrPatterns->iPatternCount; i++)
+                free(pCurrPatterns->ppSzPatterns[i]);
+            free(pCurrPatterns->ppSzPatterns);
+            free(pCurrPatterns);
         }
     }
 }
@@ -595,7 +593,6 @@ static uint64_t countTokens( const char *const pBuf, const size_t uSize, int *co
     ( void ) piInToken; // Unused.
     return uSize / 4;
 }
-
 
 static void processFile( const int iIndex,
                          const char *const pszFileName,
