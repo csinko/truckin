@@ -91,7 +91,7 @@ static const char *color_filename;
 static const char *color_tokens;
 static const char *color_percent;
 
-// Constants
+
 typedef enum {
     kBufSize_bytes           = 8192,
     kThreadThreshold_files   = 10,
@@ -102,7 +102,7 @@ typedef enum {
     kMaxFileColWidth_chars   = 60
 } Constants_t;
 
-// Typedefs
+
 typedef struct {
     char *pszPath;
     char *pszRelPath;
@@ -117,27 +117,45 @@ typedef struct {
 } ThreadArgs_t;
 
 typedef struct IgnorePatterns {
-    char                   *pszDir;
-    char                  **ppSzPatterns;
-    int                     iPatternCount;
-    struct IgnorePatterns  *pParent;
+    char                  *pszDir;
+    char                 **ppSzPatterns;
+    int                    iPatternCount;
+    struct IgnorePatterns *pParent;
 } IgnorePatterns_t;
 
-// Global variables
-static int          iVerbose       = 0;
-static char        *pszOutputFile  = NULL;
-static char        *pszBasePath    = NULL;
-static FileEntry_t *pFileList      = NULL;
-static int          iFileCount     = 0;
-static int          iFileCapacity  = 0;
-static uint64_t    *puFileTokens   = NULL;
-static char        *ppSzIncludes[kMaxNumPatterns] = { 0 };
-static char        *ppSzExcludes[kMaxNumExcludes] = { 0 };
-static int          iIncludeCount  = 0;
-static int          iExcludeCount  = 0;
-static int          iJsonOutput    = 0;  // Flag for JSON output
-static int          iNoColor       = 0;  // Flag to disable color
-static pthread_mutex_t mutexOutput = PTHREAD_MUTEX_INITIALIZER;
+
+static int           iVerbose       = 0;
+static char         *pszOutputFile  = NULL;
+static char         *pszBasePath    = NULL;
+static FileEntry_t  *pFileList      = NULL;
+static int           iFileCount     = 0;
+static int           iFileCapacity  = 0;
+static uint64_t     *puFileTokens   = NULL;
+static char         *ppSzIncludes[kMaxNumPatterns] = { 0 };
+static char         *ppSzExcludes[kMaxNumExcludes] = { 0 };
+static int           iIncludeCount  = 0;
+static int           iExcludeCount  = 0;
+static int           iJsonOutput    = 0;
+static int           iNoColor       = 0;
+static pthread_mutex_t mutexOutput  = PTHREAD_MUTEX_INITIALIZER;
+static bool          bIncludeLockFiles = false;
+
+// Default lock files to exclude
+static const char *defaultLockFiles[] =
+{
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "flake.lock",
+    "Gemfile.lock",
+    "composer.lock",
+    "Cargo.lock",
+    "go.sum",
+    "poetry.lock",
+    "Pipfile.lock"
+};
+static const int numDefaultLockFiles = sizeof(defaultLockFiles) / sizeof(defaultLockFiles[0]);
+
 
 // Static function prototypes
 static char *expandTilde( const char *const pszPath );
@@ -160,14 +178,16 @@ static void  parseArguments( const int iArgc, char *const pArgv[] );
 static void  freePatterns( void );
 static int   cmpTokenCount( const void *pA, const void *pB );
 
+
 // Public functions
 int main( const int iArgc, char *const pArgv[] );
+
 
 // Static functions
 static char *expandTilde( const char *const pszPath )
 {
     char *pszResult = NULL;
-    if ( pszPath[ 0 ] == '~' )
+    if ( pszPath[0] == '~' )
     {
         const char *pszHome = getenv( "HOME" );
         if ( pszHome == NULL )
@@ -220,7 +240,7 @@ static char *getRelPath( const char *const pszFilePath, const char *const pszDir
     size_t uDirLen = strlen( pszDir );
     char *pszRel = NULL;
     if ( ( strncmp( pszFilePath, pszDir, uDirLen ) == 0 ) &&
-         ( ( pszFilePath[ uDirLen ] == '/' ) || ( pszFilePath[ uDirLen ] == '\0' ) ) )
+         ( ( pszFilePath[uDirLen] == '/' ) || ( pszFilePath[uDirLen] == '\0' ) ) )
     {
         const char *pRel = pszFilePath + uDirLen;
         if ( ( *pRel == '/' ) == true )
@@ -254,7 +274,7 @@ static char *truncateString( const char *const pszStr, const int iMaxWidth )
             exit( EXIT_FAILURE );
         }
         strncpy( pszTrunc, pszStr, iWidth - 3 );
-        pszTrunc[ iWidth - 3 ] = '\0';
+        pszTrunc[iWidth - 3] = '\0';
         strcat( pszTrunc, "..." );
     }
     return pszTrunc;
@@ -267,16 +287,16 @@ static bool isTextFile( const char *const pszFileName )
     {
         return false; // Cannot open file
     }
-    char pBuffer[ 512 ] = { 0 };
+    char pBuffer[512] = { 0 };
     ssize_t iBytes = read( iFd, pBuffer, sizeof( pBuffer ) );
     close( iFd );
     if ( iBytes <= 0 )
     {
         return true; // Empty file is text
     }
-    for ( size_t uIdx = 0; uIdx < ( size_t ) iBytes; uIdx++ )
+    for ( size_t uIdx = 0; uIdx < ( size_t )iBytes; uIdx++ )
     {
-        if ( pBuffer[ uIdx ] == '\0' )
+        if ( pBuffer[uIdx] == '\0' )
         {
             return false; // Null byte indicates binary
         }
@@ -298,10 +318,10 @@ static void addFileToList( const char *const pszFilePath )
         pFileList = pTemp;
         iFileCapacity = iNewCap;
     }
-    pFileList[ iFileCount ].pszPath = strdup( pszFilePath );
-    pFileList[ iFileCount ].pszRelPath = getRelativePath( pszFilePath, pszBasePath );
-    if ( pFileList[ iFileCount ].pszPath == NULL ||
-         pFileList[ iFileCount ].pszRelPath == NULL )
+    pFileList[iFileCount].pszPath = strdup( pszFilePath );
+    pFileList[iFileCount].pszRelPath = getRelativePath( pszFilePath, pszBasePath );
+    if ( pFileList[iFileCount].pszPath == NULL ||
+         pFileList[iFileCount].pszRelPath == NULL )
     {
         perror( "strdup" );
         exit( EXIT_FAILURE );
@@ -321,7 +341,7 @@ static char **parseGitignore( const char *const pszPath, int *const piCount )
     {
         int iCapacity = 0;
         int iCount = 0;
-        char pLine[ PATH_MAX ];
+        char pLine[PATH_MAX];
         while ( fgets( pLine, sizeof( pLine ), pFile ) != NULL )
         {
             char *pStart = pLine;
@@ -349,8 +369,8 @@ static char **parseGitignore( const char *const pszPath, int *const piCount )
                 }
                 ppPatterns = pTemp;
             }
-            ppPatterns[ iCount ] = strdup( pStart );
-            if ( ppPatterns[ iCount ] == NULL )
+            ppPatterns[iCount] = strdup( pStart );
+            if ( ppPatterns[iCount] == NULL )
             {
                 perror( "strdup" );
                 exit( EXIT_FAILURE );
@@ -359,91 +379,91 @@ static char **parseGitignore( const char *const pszPath, int *const piCount )
         }
         fclose( pFile );
         *piCount = iCount;
-        
-        // Verbose logging for parsed .gitignore patterns
-        if (iVerbose) {
-            printf("Parsed %d patterns from %s:\n", iCount, pszPath);
-            for (int i = 0; i < iCount; i++) {
-                printf("  %s\n", ppPatterns[i]);
+        if ( iVerbose )
+        {
+            printf( "Parsed %d patterns from %s:\n", iCount, pszPath );
+            for ( int i = 0; i < iCount; i++ )
+            {
+                printf( "  %s\n", ppPatterns[i] );
             }
         }
     }
     return ppPatterns;
 }
 
-static bool isExcluded(const char *const pszFilePath, const IgnorePatterns_t *const pPatterns)
+static bool isExcluded( const char *const pszFilePath, const IgnorePatterns_t *const pPatterns )
 {
     bool bExcluded = false;
-    for (const IgnorePatterns_t *pCurr = pPatterns;
-         (pCurr != NULL) && (bExcluded == false);
-         pCurr = pCurr->pParent)
+    for ( const IgnorePatterns_t *pCurr = pPatterns;
+          ( pCurr != NULL ) && ( bExcluded == false );
+          pCurr = pCurr->pParent )
     {
-        char *pszRelPath = getRelPath(pszFilePath, pCurr->pszDir);
-        if (pszRelPath != NULL)
+        char *pszRelPath = getRelPath( pszFilePath, pCurr->pszDir );
+        if ( pszRelPath != NULL )
         {
-            for (int iIdx = 0; (iIdx < pCurr->iPatternCount) && (bExcluded == false);
-                 iIdx++)
+            for ( int iIdx = 0; ( iIdx < pCurr->iPatternCount ) && ( bExcluded == false );
+                  iIdx++ )
             {
                 const char *pszPattern = pCurr->ppSzPatterns[iIdx];
-                // Strip leading '/' if present to match relative paths correctly
-                const char *matchPattern = (pszPattern[0] == '/') ? pszPattern + 1 : pszPattern;
-                size_t uLen = strlen(matchPattern);
-                
-                // Handle directory patterns (ending with '/')
-                if (matchPattern[uLen - 1] == '/')
+                const char *matchPattern = ( pszPattern[0] == '/' ) ? pszPattern + 1 : pszPattern;
+                size_t uLen = strlen( matchPattern );
+                if ( matchPattern[uLen - 1] == '/' )
                 {
                     char pModified[PATH_MAX];
-                    snprintf(pModified, PATH_MAX, "%s*", matchPattern);
-                    if (fnmatch(pModified, pszRelPath, FNM_PATHNAME) == 0)
+                    snprintf( pModified, PATH_MAX, "%s*", matchPattern );
+                    if ( fnmatch( pModified, pszRelPath, FNM_PATHNAME ) == 0 )
                     {
-                        if (iVerbose) {
-                            printf("Excluded %s due to pattern %s in %s\n", 
-                                   pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir);
+                        if ( iVerbose )
+                        {
+                            printf( "Excluded %s due to pattern %s in %s\n",
+                                    pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir );
                         }
                         bExcluded = true;
                     }
                 }
-                // Handle path patterns (containing '/' but not ending with '/')
-                else if (strchr(matchPattern, '/') != NULL)
+                else if ( strchr( matchPattern, '/' ) != NULL )
                 {
-                    if (fnmatch(matchPattern, pszRelPath, FNM_PATHNAME) == 0)
+                    if ( fnmatch( matchPattern, pszRelPath, FNM_PATHNAME ) == 0 )
                     {
-                        if (iVerbose) {
-                            printf("Excluded %s due to pattern %s in %s\n", 
-                                   pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir);
+                        if ( iVerbose )
+                        {
+                            printf( "Excluded %s due to pattern %s in %s\n",
+                                    pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir );
                         }
                         bExcluded = true;
                     }
                 }
-                // Handle basename patterns (no '/')
                 else
                 {
-                    char *pszBase = strrchr(pszRelPath, '/');
-                    pszBase = (pszBase != NULL) ? pszBase + 1 : pszRelPath;
-                    if (fnmatch(matchPattern, pszBase, 0) == 0)
+                    char *pszBase = strrchr( pszRelPath, '/' );
+                    pszBase = ( pszBase != NULL ) ? pszBase + 1 : pszRelPath;
+                    if ( fnmatch( matchPattern, pszBase, 0 ) == 0 )
                     {
-                        if (iVerbose) {
-                            printf("Excluded %s due to pattern %s in %s\n", 
-                                   pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir);
+                        if ( iVerbose )
+                        {
+                            printf( "Excluded %s due to pattern %s in %s\n",
+                                    pszFilePath, pCurr->ppSzPatterns[iIdx], pCurr->pszDir );
                         }
                         bExcluded = true;
                     }
                 }
             }
-            free(pszRelPath);
+            free( pszRelPath );
         }
     }
-    
-    // Check global exclude patterns if not already excluded
-    if (bExcluded == false)
+    if ( bExcluded == false )
     {
-        for (int iIdx = 0; (iIdx < iExcludeCount) && (bExcluded == false); iIdx++)
+        /* For global excludes, match only the basename of the file */
+        const char *pszBase = strrchr( pszFilePath, '/' );
+        pszBase = ( pszBase != NULL ) ? pszBase + 1 : pszFilePath;
+        for ( int iIdx = 0; ( iIdx < iExcludeCount ) && ( bExcluded == false ); iIdx++ )
         {
-            if (fnmatch(ppSzExcludes[iIdx], pszFilePath, 0) == 0)
+            if ( fnmatch( ppSzExcludes[iIdx], pszBase, 0 ) == 0 )
             {
-                if (iVerbose) {
-                    printf("Excluded %s due to global exclude pattern %s\n", 
-                           pszFilePath, ppSzExcludes[iIdx]);
+                if ( iVerbose )
+                {
+                    printf( "Excluded %s due to global exclude pattern %s\n",
+                            pszFilePath, ppSzExcludes[iIdx] );
                 }
                 bExcluded = true;
             }
@@ -452,131 +472,130 @@ static bool isExcluded(const char *const pszFilePath, const IgnorePatterns_t *co
     return bExcluded;
 }
 
-static void expandPattern(const char *const pszPattern, IgnorePatterns_t *pPatterns)
+
+static void expandPattern( const char *const pszPattern, IgnorePatterns_t *pPatterns )
 {
     struct stat stStat;
-    if (stat(pszPattern, &stStat) != 0)
+    if ( stat( pszPattern, &stStat ) != 0 )
     {
-        // Handle wildcard patterns (e.g., *.c) if the path doesn't exist
         char pDir[PATH_MAX];
         char pFilePattern[PATH_MAX];
-        const char *pszSlash = strrchr(pszPattern, '/');
-
-        if (pszSlash != NULL)
+        const char *pszSlash = strrchr( pszPattern, '/' );
+        if ( pszSlash != NULL )
         {
             size_t uLen = pszSlash - pszPattern;
-            strncpy(pDir, pszPattern, uLen);
+            strncpy( pDir, pszPattern, uLen );
             pDir[uLen] = '\0';
-            snprintf(pFilePattern, PATH_MAX, "%s", pszSlash + 1);
+            snprintf( pFilePattern, PATH_MAX, "%s", pszSlash + 1 );
         }
         else
         {
-            strcpy(pDir, ".");
-            snprintf(pFilePattern, PATH_MAX, "%s", pszPattern);
+            strcpy( pDir, "." );
+            snprintf( pFilePattern, PATH_MAX, "%s", pszPattern );
         }
-
-        if (isExcluded(pDir, pPatterns))
+        if ( isExcluded( pDir, pPatterns ) )
         {
-            if (iVerbose) {
-                printf("Skipping excluded directory for pattern: %s\n", pDir);
+            if ( iVerbose )
+            {
+                printf( "Skipping excluded directory for pattern: %s\n", pDir );
             }
-            return; // Skip excluded directories
+            return;
         }
-
-        DIR *pDirStream = opendir(pDir);
-        if (pDirStream != NULL)
+        DIR *pDirStream = opendir( pDir );
+        if ( pDirStream != NULL )
         {
             struct dirent *pEntry;
-            while ((pEntry = readdir(pDirStream)) != NULL)
+            while ( ( pEntry = readdir( pDirStream ) ) != NULL )
             {
-                if (strcmp(pEntry->d_name, ".") == 0 || strcmp(pEntry->d_name, "..") == 0)
+                if ( ( strcmp( pEntry->d_name, "." ) == 0 ) ||
+                     ( strcmp( pEntry->d_name, ".." ) == 0 ) )
+                {
                     continue;
-                if (strcmp(pEntry->d_name, ".git") == 0)
+                }
+                if ( strcmp( pEntry->d_name, ".git" ) == 0 )
+                {
                     continue;
-
+                }
                 char pFullPath[PATH_MAX];
-                snprintf(pFullPath, PATH_MAX, "%s/%s", pDir, pEntry->d_name);
-
-                if (fnmatch(pFilePattern, pEntry->d_name, 0) == 0)
+                snprintf( pFullPath, PATH_MAX, "%s/%s", pDir, pEntry->d_name );
+                if ( fnmatch( pFilePattern, pEntry->d_name, 0 ) == 0 )
                 {
                     struct stat stChild;
-                    if (stat(pFullPath, &stChild) == 0 && S_ISREG(stChild.st_mode) && !isExcluded(pFullPath, pPatterns))
+                    if ( ( stat( pFullPath, &stChild ) == 0 ) &&
+                         ( S_ISREG( stChild.st_mode ) ) &&
+                         ( !isExcluded( pFullPath, pPatterns ) ) )
                     {
-                        addFileToList(pFullPath);
+                        addFileToList( pFullPath );
                     }
                 }
             }
-            closedir(pDirStream);
+            closedir( pDirStream );
         }
         return;
     }
-
-    // Path exists, check if it’s excluded
-    if (isExcluded(pszPattern, pPatterns))
+    if ( isExcluded( pszPattern, pPatterns ) )
     {
-        if (iVerbose) {
-            printf("Skipping excluded path: %s\n", pszPattern);
+        if ( iVerbose )
+        {
+            printf( "Skipping excluded path: %s\n", pszPattern );
         }
-        return; // Skip excluded files or directories entirely
-    }
-
-    // Handle regular files
-    if (S_ISREG(stStat.st_mode))
-    {
-        addFileToList(pszPattern);
         return;
     }
-
-    // Handle directories
-    if (S_ISDIR(stStat.st_mode))
+    if ( S_ISREG( stStat.st_mode ) )
     {
-        DIR *pDir = opendir(pszPattern);
-        if (pDir == NULL)
+        addFileToList( pszPattern );
+        return;
+    }
+    if ( S_ISDIR( stStat.st_mode ) )
+    {
+        DIR *pDir = opendir( pszPattern );
+        if ( pDir == NULL )
+        {
             return;
-
-        // Load local .gitignore if present
+        }
         IgnorePatterns_t *pCurrPatterns = pPatterns;
         char pGitPath[PATH_MAX];
-        snprintf(pGitPath, PATH_MAX, "%s/.gitignore", pszPattern);
-        if (access(pGitPath, F_OK) == 0)
+        snprintf( pGitPath, PATH_MAX, "%s/.gitignore", pszPattern );
+        if ( access( pGitPath, F_OK ) == 0 )
         {
             int iNewCount = 0;
-            char **ppSzNew = parseGitignore(pGitPath, &iNewCount);
-            if (iNewCount > 0)
+            char **ppSzNew = parseGitignore( pGitPath, &iNewCount );
+            if ( iNewCount > 0 )
             {
-                IgnorePatterns_t *pNew = malloc(sizeof(IgnorePatterns_t));
-                pNew->pszDir = strdup(pszPattern);
+                IgnorePatterns_t *pNew = malloc( sizeof( IgnorePatterns_t ) );
+                pNew->pszDir = strdup( pszPattern );
                 pNew->ppSzPatterns = ppSzNew;
                 pNew->iPatternCount = iNewCount;
                 pNew->pParent = pPatterns;
                 pCurrPatterns = pNew;
             }
         }
-
         struct dirent *pEntry;
-        while ((pEntry = readdir(pDir)) != NULL)
+        while ( ( pEntry = readdir( pDir ) ) != NULL )
         {
-            if (strcmp(pEntry->d_name, ".") == 0 || strcmp(pEntry->d_name, "..") == 0)
+            if ( ( strcmp( pEntry->d_name, "." ) == 0 ) ||
+                 ( strcmp( pEntry->d_name, ".." ) == 0 ) )
+            {
                 continue;
-            if (strcmp(pEntry->d_name, ".git") == 0)
+            }
+            if ( strcmp( pEntry->d_name, ".git" ) == 0 )
+            {
                 continue;
-
+            }
             char pFullPath[PATH_MAX];
-            snprintf(pFullPath, PATH_MAX, "%s/%s", pszPattern, pEntry->d_name);
-
-            // Recursively process the full path with current patterns
-            expandPattern(pFullPath, pCurrPatterns);
+            snprintf( pFullPath, PATH_MAX, "%s/%s", pszPattern, pEntry->d_name );
+            expandPattern( pFullPath, pCurrPatterns );
         }
-        closedir(pDir);
-
-        // Clean up local patterns if allocated
-        if (pCurrPatterns != pPatterns)
+        closedir( pDir );
+        if ( pCurrPatterns != pPatterns )
         {
-            free(pCurrPatterns->pszDir);
-            for (int i = 0; i < pCurrPatterns->iPatternCount; i++)
-                free(pCurrPatterns->ppSzPatterns[i]);
-            free(pCurrPatterns->ppSzPatterns);
-            free(pCurrPatterns);
+            free( pCurrPatterns->pszDir );
+            for ( int i = 0; i < pCurrPatterns->iPatternCount; i++ )
+            {
+                free( pCurrPatterns->ppSzPatterns[i] );
+            }
+            free( pCurrPatterns->ppSzPatterns );
+            free( pCurrPatterns );
         }
     }
 }
@@ -589,8 +608,8 @@ static uint64_t countTokens( const char *const pBuf, const size_t uSize, int *co
        to bring in an actual tokenizer library and add overhead
        to the process.
     */
-    ( void ) pBuf;      // Unused in this implementation.
-    ( void ) piInToken; // Unused.
+    ( void )pBuf;      // Unused in this implementation.
+    ( void )piInToken; // Unused.
     return uSize / 4;
 }
 
@@ -607,38 +626,37 @@ static void processFile( const int iIndex,
 
     uint64_t uLocalTokens = 0;
 
-    if ( ! isTextFile( pszFileName ) )
+    if ( !isTextFile( pszFileName ) )
     {
         pthread_mutex_lock( &mutexOutput );
         fprintf( stderr, "Skipping binary file: %s\n", pszFileName );
         pthread_mutex_unlock( &mutexOutput );
-        puFileTokens[ iIndex ] = 0;
+        puFileTokens[iIndex] = 0;
         return;
     }
 
-#define APPEND_TO_LOCAL( pData, uLenData )                              \
-    do                                                                  \
-    {                                                                   \
-        if ( *puBufferLength + ( uLenData ) + 1 > *puBufferCapacity )     \
-        {                                                               \
-            *puBufferCapacity = ( *puBufferLength + ( uLenData ) + 1 ) * 2; \
-            char *pNewBuf = realloc( *ppLocalBuffer, *puBufferCapacity ); \
-            if ( pNewBuf == NULL )                                      \
-            {                                                           \
-                perror( "realloc" );                                    \
-                exit( EXIT_FAILURE );                                   \
-            }                                                           \
-            *ppLocalBuffer = pNewBuf;                                   \
-        }                                                               \
-        memcpy( *ppLocalBuffer + *puBufferLength, pData, uLenData );      \
-        *puBufferLength += ( uLenData );                                  \
-        *( *ppLocalBuffer + *puBufferLength ) = '\0';                     \
-    }                                                                   \
-    while ( 0 )
+#define APPEND_TO_LOCAL( pData, uLenData )                                   \
+    do                                                                     \
+    {                                                                      \
+        if ( *puBufferLength + ( uLenData ) + 1 > *puBufferCapacity )      \
+        {                                                                  \
+            *puBufferCapacity = ( *puBufferLength + ( uLenData ) + 1 ) * 2;  \
+            char *pNewBuf = realloc( *ppLocalBuffer, *puBufferCapacity );   \
+            if ( pNewBuf == NULL )                                         \
+            {                                                              \
+                perror( "realloc" );                                       \
+                exit( EXIT_FAILURE );                                      \
+            }                                                              \
+            *ppLocalBuffer = pNewBuf;                                      \
+        }                                                                  \
+        memcpy( *ppLocalBuffer + *puBufferLength, pData, uLenData );         \
+        *puBufferLength += ( uLenData );                                     \
+        *(*ppLocalBuffer + *puBufferLength) = '\0';                          \
+    } while ( 0 )
 
     {
         char *pszHeader = NULL;
-        if ( asprintf( &pszHeader, "<FILE name=\"%s\">\n", pFileList[ iIndex ].pszRelPath ) >= 0 )
+        if ( asprintf( &pszHeader, "<FILE name=\"%s\">\n", pFileList[iIndex].pszRelPath ) >= 0 )
         {
             APPEND_TO_LOCAL( pszHeader, strlen( pszHeader ) );
             free( pszHeader );
@@ -651,7 +669,7 @@ static void processFile( const int iIndex,
         pthread_mutex_lock( &mutexOutput );
         fprintf( stderr, "Error opening %s: %s\n", pszFileName, strerror( errno ) );
         pthread_mutex_unlock( &mutexOutput );
-        puFileTokens[ iIndex ] = 0;
+        puFileTokens[iIndex] = 0;
         return;
     }
 
@@ -662,12 +680,12 @@ static void processFile( const int iIndex,
         fprintf( stderr, "Error stating %s: %s\n", pszFileName, strerror( errno ) );
         pthread_mutex_unlock( &mutexOutput );
         close( iFd );
-        puFileTokens[ iIndex ] = 0;
+        puFileTokens[iIndex] = 0;
         return;
     }
 
-    size_t uFileSize = ( size_t ) stStat.st_size;
-    if ( uFileSize > 0 && uFileSize < 100 * 1024 * 1024 )
+    size_t uFileSize = ( size_t )stStat.st_size;
+    if ( ( uFileSize > 0 ) && ( uFileSize < 100 * 1024 * 1024 ) )
     {
         void *pMapped = mmap( NULL, uFileSize, PROT_READ, MAP_PRIVATE, iFd, 0 );
         if ( pMapped != MAP_FAILED )
@@ -706,7 +724,7 @@ static void processFile( const int iIndex,
         const char *pszFooter = "\n</FILE>\n";
         APPEND_TO_LOCAL( pszFooter, strlen( pszFooter ) );
     }
-    puFileTokens[ iIndex ] = uLocalTokens;
+    puFileTokens[iIndex] = uLocalTokens;
 
     if ( iVerbose == true )
     {
@@ -720,7 +738,7 @@ static void processFile( const int iIndex,
 
 static void *workerThread( void *pArg )
 {
-    ThreadArgs_t *pArgs = ( ThreadArgs_t * ) pArg;
+    ThreadArgs_t *pArgs = ( ThreadArgs_t * )pArg;
     pArgs->pszBuffer = malloc( kInitialBufferSize_bytes );
     if ( pArgs->pszBuffer == NULL )
     {
@@ -731,7 +749,7 @@ static void *workerThread( void *pArg )
     pArgs->uBufferCapacity = kInitialBufferSize_bytes;
     for ( int iIdx = pArgs->iStart; iIdx < pArgs->iEnd; iIdx++ )
     {
-        processFile( iIdx, pFileList[ iIdx ].pszPath, &pArgs->pszBuffer,
+        processFile( iIdx, pFileList[iIdx].pszPath, &pArgs->pszBuffer,
                      &pArgs->uBufferLength, &pArgs->uBufferCapacity );
     }
     return NULL;
@@ -740,7 +758,7 @@ static void *workerThread( void *pArg )
 static void parseArguments( const int iArgc, char *const pArgv[] )
 {
     int iOpt;
-    while ( ( iOpt = getopt( iArgc, pArgv, "o:vjhn" ) ) != -1 )
+    while ( ( iOpt = getopt( iArgc, pArgv, "o:vjhnl" ) ) != -1 )
     {
         switch ( iOpt )
         {
@@ -764,21 +782,25 @@ static void parseArguments( const int iArgc, char *const pArgv[] )
                 iNoColor = 1;
                 break;
             }
+            case 'l':  // New option to include lock files
+            {
+                bIncludeLockFiles = true;
+                break;
+            }
             case 'h':
             default:
             {
                 fprintf( stderr,
-                         "Truckin version %s\nUsage: %s [-v] [-o output_file] [-j] [-n] [patterns...]\n",
-                         TRUCKIN_VERSION,
-                         pArgv[ 0 ] );
+                         "Truckin version %s\nUsage: %s [-v] [-o output_file] [-j] [-n] [-l] [patterns...]\n",
+                         TRUCKIN_VERSION, pArgv[0] );
                 exit( EXIT_SUCCESS );
             }
         }
     }
     for ( int iIdx = optind; iIdx < iArgc; iIdx++ )
     {
-        ppSzIncludes[ iIncludeCount ] = strdup( pArgv[ iIdx ] );
-        if ( ppSzIncludes[ iIncludeCount ] == NULL )
+        ppSzIncludes[iIncludeCount] = strdup( pArgv[iIdx] );
+        if ( ppSzIncludes[iIncludeCount] == NULL )
         {
             perror( "strdup" );
             exit( EXIT_FAILURE );
@@ -787,38 +809,38 @@ static void parseArguments( const int iArgc, char *const pArgv[] )
     }
     if ( iIncludeCount == 0 )
     {
-        ppSzIncludes[ iIncludeCount ] = strdup( "*" );
-        if ( ppSzIncludes[ 0 ] == NULL )
+        ppSzIncludes[iIncludeCount] = strdup( "*" );
+        if ( ppSzIncludes[0] == NULL )
         {
             perror( "strdup" );
             exit( EXIT_FAILURE );
         }
         iIncludeCount++;
     }
-    pszBasePath = expandTilde( ppSzIncludes[ 0 ] );
+    pszBasePath = expandTilde( ppSzIncludes[0] );
 }
 
 static void freePatterns( void )
 {
     for ( int iIdx = 0; iIdx < iIncludeCount; iIdx++ )
     {
-        free( ppSzIncludes[ iIdx ] );
+        free( ppSzIncludes[iIdx] );
     }
     for ( int iIdx = 0; iIdx < iExcludeCount; iIdx++ )
     {
-        free( ppSzExcludes[ iIdx ] );
+        free( ppSzExcludes[iIdx] );
     }
 }
 
 static int cmpTokenCount( const void *pA, const void *pB )
 {
-    int iIdxA = *( const int * ) pA;
-    int iIdxB = *( const int * ) pB;
-    if ( puFileTokens[ iIdxA ] < puFileTokens[ iIdxB ] )
+    int iIdxA = *( const int * )pA;
+    int iIdxB = *( const int * )pB;
+    if ( puFileTokens[iIdxA] < puFileTokens[iIdxB] )
     {
         return 1;
     }
-    else if ( puFileTokens[ iIdxA ] > puFileTokens[ iIdxB ] )
+    else if ( puFileTokens[iIdxA] > puFileTokens[iIdxB] )
     {
         return -1;
     }
@@ -828,26 +850,51 @@ static int cmpTokenCount( const void *pA, const void *pB )
     }
 }
 
+
 int main( const int iArgc, char *const pArgv[] )
 {
     parseArguments( iArgc, pArgv );
 
-    // Color Control Logic
+    if ( !bIncludeLockFiles )
+    {
+        for ( int i = 0; i < numDefaultLockFiles; i++ )
+        {
+            if ( iExcludeCount < kMaxNumExcludes )
+            {
+                ppSzExcludes[iExcludeCount] = strdup( defaultLockFiles[i] );
+                if ( ppSzExcludes[iExcludeCount] == NULL )
+                {
+                    perror( "strdup" );
+                    exit( EXIT_FAILURE );
+                }
+                iExcludeCount++;
+            }
+            else
+            {
+                fprintf( stderr, "Too many exclude patterns\n" );
+                exit( EXIT_FAILURE );
+            }
+        }
+    }
+
     const char *no_color = getenv( "NO_COLOR" );
     const char *force_color = getenv( "FORCE_COLOR" );
-    int iNoColorFlag = iNoColor;  // Start with command-line flag
-
-    if ( no_color != NULL && *no_color != '\0' )
+    int iNoColorFlag = iNoColor;
+    if ( ( no_color != NULL ) && ( *no_color != '\0' ) )
     {
         iNoColorFlag = 1;
     }
-    else if ( force_color != NULL && *force_color != '\0' )
+    else if ( ( force_color != NULL ) && ( *force_color != '\0' ) )
     {
         iNoColorFlag = 0;
     }
-    else if ( iNoColorFlag == 0 && isatty( STDOUT_FILENO ) == 0 )
+    else if ( ( iNoColorFlag == 0 ) && ( isatty( STDOUT_FILENO ) == 0 ) )
     {
         iNoColorFlag = 1;
+    }
+    else
+    {
+      // Do nothing
     }
 
     if ( iNoColorFlag )
@@ -871,7 +918,7 @@ int main( const int iArgc, char *const pArgv[] )
 
     for ( int iIdx = 0; iIdx < iIncludeCount; iIdx++ )
     {
-        expandPattern( ppSzIncludes[ iIdx ], NULL );
+        expandPattern( ppSzIncludes[iIdx], NULL );
     }
     if ( iFileCount == 0 )
     {
@@ -891,12 +938,12 @@ int main( const int iArgc, char *const pArgv[] )
     if ( iFileCount > kThreadThreshold_files )
     {
         long lCores = sysconf( _SC_NPROCESSORS_ONLN );
-        iNumThreads = ( lCores > 0 ) ? ( int ) lCores : 1;
+        iNumThreads = ( lCores > 0 ) ? ( int )lCores : 1;
     }
 
     pthread_t *pThreads = malloc( iNumThreads * sizeof( pthread_t ) );
     ThreadArgs_t *pArgs = malloc( iNumThreads * sizeof( ThreadArgs_t ) );
-    if ( pThreads == NULL || pArgs == NULL )
+    if ( ( pThreads == NULL ) || ( pArgs == NULL ) )
     {
         perror( "malloc" );
         freePatterns();
@@ -908,11 +955,11 @@ int main( const int iArgc, char *const pArgv[] )
     int iStart = 0;
     for ( int iIdx = 0; iIdx < iNumThreads; iIdx++ )
     {
-        pArgs[ iIdx ].iStart = iStart;
+        pArgs[iIdx].iStart = iStart;
         int iChunkSize = ( iIdx < iRemainder ) ? iQuotient + 1 : iQuotient;
-        pArgs[ iIdx ].iEnd = iStart + iChunkSize;
+        pArgs[iIdx].iEnd = iStart + iChunkSize;
         iStart += iChunkSize;
-        if ( pthread_create( &pThreads[ iIdx ], NULL, workerThread, &pArgs[ iIdx ] ) != 0 )
+        if ( pthread_create( &pThreads[iIdx], NULL, workerThread, &pArgs[iIdx] ) != 0 )
         {
             perror( "pthread_create" );
         }
@@ -920,19 +967,19 @@ int main( const int iArgc, char *const pArgv[] )
 
     for ( int iIdx = 0; iIdx < iNumThreads; iIdx++ )
     {
-        pthread_join( pThreads[ iIdx ], NULL );
+        pthread_join( pThreads[iIdx], NULL );
     }
 
     uint64_t uTotalTokens = 0;
     for ( int iIdx = 0; iIdx < iFileCount; iIdx++ )
     {
-        uTotalTokens += puFileTokens[ iIdx ];
+        uTotalTokens += puFileTokens[iIdx];
     }
 
     size_t uTotalLength = 0;
     for ( int iIdx = 0; iIdx < iNumThreads; iIdx++ )
     {
-        uTotalLength += pArgs[ iIdx ].uBufferLength;
+        uTotalLength += pArgs[iIdx].uBufferLength;
     }
 
     char *pszClipboard = malloc( uTotalLength + 1 );
@@ -945,10 +992,10 @@ int main( const int iArgc, char *const pArgv[] )
     size_t uOffset = 0;
     for ( int iIdx = 0; iIdx < iNumThreads; iIdx++ )
     {
-        memcpy( pszClipboard + uOffset, pArgs[ iIdx ].pszBuffer, pArgs[ iIdx ].uBufferLength );
-        uOffset += pArgs[ iIdx ].uBufferLength;
+        memcpy( pszClipboard + uOffset, pArgs[iIdx].pszBuffer, pArgs[iIdx].uBufferLength );
+        uOffset += pArgs[iIdx].uBufferLength;
     }
-    pszClipboard[ uTotalLength ] = '\0';
+    pszClipboard[uTotalLength] = '\0';
 
     int *pIndices = malloc( iFileCount * sizeof( int ) );
     if ( pIndices == NULL )
@@ -958,14 +1005,14 @@ int main( const int iArgc, char *const pArgv[] )
     }
     for ( int iIdx = 0; iIdx < iFileCount; iIdx++ )
     {
-        pIndices[ iIdx ] = iIdx;
+        pIndices[iIdx] = iIdx;
     }
     qsort( pIndices, iFileCount, sizeof( int ), cmpTokenCount );
 
     int iMaxRelLen = 0;
     for ( int iIdx = 0; iIdx < iFileCount; iIdx++ )
     {
-        int iLen = strlen( pFileList[ iIdx ].pszRelPath );
+        int iLen = strlen( pFileList[iIdx].pszRelPath );
         if ( iLen > iMaxRelLen )
         {
             iMaxRelLen = iLen;
@@ -982,14 +1029,14 @@ int main( const int iArgc, char *const pArgv[] )
         printf( "    \"files\": [\n" );
         for ( int iIdx = 0; iIdx < iFileCount; iIdx++ )
         {
-            int iFileIdx = pIndices[ iIdx ];
-            double dPercent = ( uTotalTokens > 0 ) ? ( 100.0 * puFileTokens[ iFileIdx ] / uTotalTokens ) : 0;
+            int iFileIdx = pIndices[iIdx];
+            double dPercent = ( uTotalTokens > 0 ) ? ( 100.0 * puFileTokens[iFileIdx] / uTotalTokens ) : 0;
             if ( iIdx > 0 )
             {
                 printf( ",\n" );
             }
             printf( "        {\"name\": \"%s\", \"tokens\": %llu, \"percent\": %.2f}",
-                    pFileList[ iFileIdx ].pszRelPath, puFileTokens[ iFileIdx ], dPercent );
+                    pFileList[iFileIdx].pszRelPath, puFileTokens[iFileIdx], dPercent );
         }
         printf( "\n    ]\n" );
         printf( "}\n" );
@@ -1002,14 +1049,14 @@ int main( const int iArgc, char *const pArgv[] )
         printf( "%s%-*s %-12s %-10s%s\n", color_header, iColWidth, "File", "Tokens", "Percent", color_reset );
         for ( int iIdx = 0; iIdx < iFileCount; iIdx++ )
         {
-            int iFileIdx = pIndices[ iIdx ];
-            double dPercent = ( uTotalTokens > 0 ) ? ( 100.0 * puFileTokens[ iFileIdx ] / uTotalTokens ) : 0;
-            char *pszDisp = truncateString( pFileList[ iFileIdx ].pszRelPath, iColWidth );
-            char pPercentStr[ 20 ];
+            int iFileIdx = pIndices[iIdx];
+            double dPercent = ( uTotalTokens > 0 ) ? ( 100.0 * puFileTokens[iFileIdx] / uTotalTokens ) : 0;
+            char *pszDisp = truncateString( pFileList[iFileIdx].pszRelPath, iColWidth );
+            char pPercentStr[20];
             snprintf( pPercentStr, sizeof( pPercentStr ), "%6.2f%%", dPercent );
             printf( "%s%-*s%s %s%-12llu%s %s%-10s%s\n",
                     color_filename, iColWidth, pszDisp, color_reset,
-                    color_tokens, puFileTokens[ iFileIdx ], color_reset,
+                    color_tokens, puFileTokens[iFileIdx], color_reset,
                     color_percent, pPercentStr, color_reset );
             free( pszDisp );
         }
@@ -1050,13 +1097,13 @@ int main( const int iArgc, char *const pArgv[] )
     free( pThreads );
     for ( int iIdx = 0; iIdx < iNumThreads; iIdx++ )
     {
-        free( pArgs[ iIdx ].pszBuffer );
+        free( pArgs[iIdx].pszBuffer );
     }
     free( pArgs );
     for ( int iIdx = 0; iIdx < iFileCount; iIdx++ )
     {
-        free( pFileList[ iIdx ].pszPath );
-        free( pFileList[ iIdx ].pszRelPath );
+        free( pFileList[iIdx].pszPath );
+        free( pFileList[iIdx].pszRelPath );
     }
     free( pFileList );
     free( puFileTokens );
@@ -1071,6 +1118,6 @@ int main( const int iArgc, char *const pArgv[] )
     {
         free( pszBasePath );
     }
-
     return EXIT_SUCCESS;
 }
+
